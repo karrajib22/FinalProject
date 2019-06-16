@@ -1,0 +1,331 @@
+---
+title: "Final Report - ANLY 506-51- B-2019/Late Spring - Exploratory Data Analytics"
+author: "Rajib Kar"
+date: '`r format(Sys.Date(), "%d %b %Y")`'
+#output: html_document
+output: pdf_document
+fontsize: 12pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r step1, include=FALSE, eval=FALSE}
+#installing required packages
+install.packages("tidyverse",dependencies = T)
+install.packages("NbClust")
+install.packages("cluster")
+install.packages("clustertend")
+install.packages("factoextra")
+install.packages("dendextend")
+```
+```{r step2, include=FALSE}
+
+rm(list = ls()) #Cleaning the workspace
+
+library("tidyverse")
+library("dplyr")
+library(cluster)    # clustering algorithms
+library(clustertend)
+library(factoextra) # clustering algorithms & visualization
+library(NbClust)
+library(dendextend) # for comparing two dendrograms for Hierarchical Clustering
+library(stats)
+
+library(grid)
+library(gridExtra)
+library(scales)
+library(gtable)
+# Setting the working directory
+setwd("~/RKAR/Harrisburg Univ/Study Doc/ANLY 506- Exploratory Data Analysis/Final Project Work")
+getwd()
+#fetching input csv
+df.raw<-read_csv("gapminder.csv")
+```
+## Introduction
+
+This paper is to showcase multiple exploratory data analysis results on the demographic data of the countries across the world, by applying different techniques learned in the class of ANLY 506-51-B-2019/ Late Spring - Exploratory Data Analytics. The following exercise will be undertaken:
+
+* __Studying the changes in economic and health conditions of all global regions for every 50 years from year 1800 to 2000. Two metrics will be used: 1) GDP Per Capita income of each region, and 2) Life Expectancy of each region.__
+
+* __Studying relationship between income and life expectancy across all regions.__
+
+* __Forming clusters using K-Means clustering on the basis of GDP per capita and Life expectancy of each countries in region America for the years 1800, 1900 and 2000, and made the comparisons.__
+
+
+## Description of the data
+
+The "Gapminder" dataset represents the demographic data of several countries across different global regions since year 1800. It consists of __`r nrow(df.raw)` observations__ and __`r ncol(df.raw)` variables__: __`r names(df.raw)[1:length(names(df.raw))-1]`__, and __`r names(df.raw)[length(names(df.raw))]`__ with data types __`r sapply(df.raw[1:length(names(df.raw))-1], typeof)`__, and __`r sapply(df.raw[length(names(df.raw))], typeof)`__  respectively.
+
+The variables represent the following demographic metrics respectively: 
+__life__ (Life Expectancy), __income__ (GDP Per Capita), __Year__ (Year from 1800 to 2015), __County__ (Name of the countries: there are total `r length(unique(df.raw$Country))` countries), __region__ (Name of the global regions: there are total `r length(unique(df.raw$region))` regions), __population__ (Census data collected about every 10 years).  
+
+
+## Pre-processing and Exploring the data
+
+The dataset doesn't have population data from year 1800 to 1949 for two countries: __Taiwan__ and __Netherlands Antilles__. __Taiwan__ doesn't even have population data for year 2014 and 2015. Otherwise in the dataset each remaining country has census data for every 10th year starting from year 1800 till 1950, and for every year from year 1951 to 2015. So for simplicity observations are dropped for __Taiwan__ and __Netherlands Antilles__. For remaining __`r length(unique(df.raw$Country))-2`__ countries, from year 1800 to 1950 for each year where the population data is missing, data from the most recent previous census year will be used for imputation i.e census data from year 1800 will be used to impute the missing data of population of years between 1801 and 1809, census data from year 1810 will be used to impute the missing data of population of years between 1811 and 1819, and so on so forth.
+
+```{r step3, include=FALSE}
+#Sorting data by Country and then by Year
+df.raw<- df.raw%>%
+          arrange(Country, Year)
+
+#Testing
+test.df.raw<-df.raw%>%
+              filter(Year>=1950 & is.na(population))%>%
+                select(Country,Year,population)
+#Taiwan doesn't have population value for years 2014 and 2015
+test.df.raw<-df.raw%>%
+              filter(Year%%10 == 0 & is.na(population))%>%
+                select(Country,Year,population)
+#Taiwan and Netherlands Antilles don't have population value for years between 1800 and 1940 includiong census data from every 10th year beginning from year 1800
+
+#Dropping both Taiwan and Netherlands Antilles from the table
+df1<-df.raw%>%
+      filter(!(Country %in% c("Taiwan","Netherlands Antilles")))
+#Testing df1
+test.df1<-df1%>%
+            filter(Year%%10 == 0 & is.na(population)) #0 observation
+test.df1<-df1%>%
+            filter(Year<1950 & Year%%10 !=0 & !is.na(population)) #0 observation
+test.df1<-df1%>%
+            filter(Year>=1950 & is.na(population)) #0 observation
+
+#Imputing population of each country where it is missing by population from the most recent previous census year
+df2<- df1%>%
+        mutate(year.modified = (Year%/%10)*10)
+df3<- df1%>%
+        filter(!(is.na(population)))%>%
+          mutate(year.modified = Year)%>%
+            select(Country,year.modified,population)
+df4<- df2%>%
+        left_join(df3,by=c("Country","year.modified"))%>%
+          mutate(population=coalesce(population.x,population.y)) #Imputation complete
+#Testing df4 to check if any bad data created
+test.df4<-df4%>%
+            filter(Year%%10 == 0 & population.x!=population.y) #0 observation
+#Dropping the intermediate columns population.x, population.y and year.modified, and keeping all columns from df1 in df4
+#So df4 is df1 with imputed value of population
+df4<-df4%>%
+      select(names(df1))
+
+
+#Missing value is present only in column income.
+sum(is.na(df4$Country)) #0
+sum(is.na(df4$Year))    #0
+sum(is.na(df4$life))          #0
+sum(is.na(df4$population))    #0
+sum(is.na(df4$income))    #2136
+sum(is.na(df4$region))    #0
+
+test.df4.income<-df4%>%
+                  filter(is.na(income))
+length(unique(test.df4.income$Country)) #14 Countries
+length(unique(test.df4.income$region)) #5 regions
+
+#Considering Year = 1800, 1850, 1900, 1950, 2000 => 53 observations
+cnt<-df4%>%
+  filter(Year%in%c(1800,1850,1900,1950,2000) & is.na(income))%>%  
+    select(income)%>%
+      count() 
+
+#Dropping the records with missing values
+df4<-df4%>%
+      filter(!is.na(income))
+
+## Creating an index field on df4
+df4<-rowid_to_column(df4,"ID")
+rownames(df4)<-df4$ID
+
+#Clearing workspace
+#rm(list = c("df1", "df2", "df3","df.raw","test.df.raw","test.df1","test.df4","test.df4.income","cnt")) 
+```
+Similarly the dataset has __`r sum(is.na(df4$income)) ` observations__ with missing income values for __`r length(unique(test.df4.income$Country)) `  Countries__ and __`r length(unique(test.df4.income$region))` regions__. However since this paper involves with analysis limited only to certain years i.e. 1800, 1850, 1900, 1950, and 2000 the missing values of income impacts only __`r cnt` observations__. Hence all observations with missing income value is dropped. 
+
+## Insights
+
+In order to get an insight of how the global regions have been changing in terms of their economy the metric __GDP per capita income__ is considered. A region with better economy is considered to have a better mean income. Box-plots for GDP per capita income of each Global region for every 50 years from year 1800 to 2000 are drawn to visualise this. But as shown in Fig 1. the chart is not readable due to wide spread of income across different regions, from regions where economy is pretty strong to regions where economy is pretty weak.
+
+To avoid this, the same chart is redrawn using Log10 scale for GDP per capita income as shown in Fig2. From this new chart it is clearly visible that, overall, all the regions are moving towards a higher GDP per capita income over the two centuries, but at a much faster rate during the 19th century. However region like South Asia and Sub-Sahara Africa are lagging far behind compared to the rest. Again between South Asia and Sub-Sahara Africa it is noticeable that, only one time, during year 1950, Sub-Sahara Africa region surpassed the South Asia region in terms of median GDP per capita income. Another observation from this chart is that the income-gap between poor and riches are gradually widening over the period of time. Also the rapid economical growth of Middle East and North Africa region, mostly riding on the oil boom between year 1950 and 2000, is quite easily visible. 
+
+Another parameter of prosperity of a region is its health condition which is directly linked with the Life expectancy of its people, i.e. the developed countries have higher median life expectancy than that of the developing countries. Fig 3. shows box plots of Life expectancy of global regions for every 50 years from year 1800 to 2000. It is obvious from this chart that life expectancy of the regions were almost stagnant till 19th century, after which due to the breakthroughs in medical science, it improves dramatically from year 1950 to 2000. Another interesting observation between year 1950 and 2000 is that the developed regions are not only pushing their median life expectancy upwards, they are also being able to reduce the IQR (inter quartile range) of their life expectancy metric, mostly by making better social, economical, and medical benefits available towards their people. 
+\vspace{30pt}
+
+```{r step4.1, echo=FALSE}
+#Box plot shows a need of log10 scale for y-axis(income) 
+p<-df4%>%
+      filter(Year%in%c(1800, 1850, 1900, 1950, 2000))%>%
+        ggplot(aes(region,income)) + 
+          geom_boxplot() + 
+          xlab("Region") + 
+          ylab("GDP Per Capita") + 
+          facet_grid(~Year) + 
+#         labs(title = "Fig 1: Box Plot of GDP Per Capita of Regions") + 
+          theme(axis.text.x = element_text(angle = 90, hjust = 1),plot.title = element_text(hjust = 0.5)) 
+grid.arrange(p,bottom = "Fig 1: Box Plot of GDP Per Capita of Regions")
+```
+
+
+```{r step4.2, echo=FALSE}
+#Box plot with log10 scale applied on y-axis (income)
+p<-df4%>%
+      filter(Year%in%c(1800, 1850, 1900, 1950, 2000))%>%
+        ggplot(aes(region,income)) + 
+          geom_boxplot() + 
+          xlab("Region") + 
+          ylab("GDP Per Capita (scale: Log10)") + 
+          facet_grid(~region) + 
+#          labs(title = "Fig 2: Box Plot of GDP Per Capita in Log10 scale of Regions ") + 
+          theme(axis.text.x = element_text(angle = 90, hjust = 1),plot.title = element_text(hjust = 0.5)) + 
+          scale_y_log10(labels = trans_format("log10", math_format(10^.x)))
+grid.arrange(p,bottom = "Fig 2: Box Plot of GDP Per Capita (scale:Log10) of Regions")
+```
+\vspace{30pt}
+
+Since like income of regions in Fig 2., the life expectancy of regions in Fig 3. has a  similar upward trend over the years while comparing between developed and developing regions, a scatter plot is attempted as shown in Fig 4. to assess the  behavior of income against life expectancy for different regions across every 50 years between year 1800 and 2000.The scatter plot clearly shows a positive correlation between income and life expectancy, i.e. higher the income better is the life expectancy. 
+\vspace{30pt}
+
+```{r step4.3, echo=FALSE}
+p<-df4%>%
+      filter(Year%in%c(1800, 1850, 1900, 1950, 2000))%>%
+        ggplot(aes(region,life)) + 
+          geom_boxplot() + 
+          xlab("Region") + 
+          ylab("Life Expectency") + 
+          facet_grid(~Year) + 
+#         labs(title = "Fig 3: Box Plot of Life Expectancy of Regions") + 
+          theme(axis.text.x = element_text(angle = 90, hjust = 1),plot.title = element_text(hjust = 0.5)) 
+grid.arrange(p,bottom = "Fig 3: Box Plot of Life Expectancy of Regions")
+```
+
+\vspace{30pt}
+From Fig 4. it is apparent that the more the dots of the scatter plot are moving towards the right hand top corner of the chart over the period of years the more prosperous the corresponding regions are becoming. From this chart, as expected, it is clearly visible that regions like America, Middle East and North Africa, Europe and Central Asia, East Asia and Pacific are prospering at a much faster rate than that of the region of South Asia and Sub-Saharan Africa region. 
+\vspace{30pt}
+
+```{r step4.4, echo=FALSE}
+p<-df4%>%
+      filter(Year%in%c(1800, 1850, 1900, 1950, 2000))%>%
+        ggplot(aes(life,income)) + 
+          geom_point(aes(col=region)) + 
+          labs(x="Life Expectency", y="GDP Per Capita (scale: Log10)") +
+          facet_grid(region~Year) +
+          theme(legend.position = "bottom", legend.box = "horizontal") +
+          scale_y_log10(labels = trans_format("log10", math_format(10^.x))) + 
+          theme_bw()
+
+grid.arrange(p,bottom = "Fig 4. Income vs Life Expectancy of Regions")
+
+
+```
+\vspace{30pt}
+
+Finally an attempt is made to form clusters using K-Means clustering technique on the basis of GDP per capita income and Life expectancy of the countries falling under the region America, for the year 1800, 1900 and 2000 respectively. Clustering optimization technique suggests that the optimum number of clusters i.e. k value should be 3, 2 and 3 for year 1800, 1900 and 2000 respectively as shown in Fig 5. 
+
+The clusters are formed for year 1800, 1900, and 2000 as shown in Fig 6, Fig 7, and Fig 8 respectively.
+It is visible from these clustering charts that USA and Canada remain in the best cluster where both income and life expectency both are above average. While USA remain at top, Canada gradually reduces the gap over the years. On the otherhand countries like Uruguay and Argentina keep pace with the other countries in terms of economic growth, but gradually falling short interms of life expectancy, especially between year 1900 and 2000. 
+
+```{r cluster, echo=FALSE}
+df5<-df4%>%
+        filter(region=="America" & Year%in%c(1800))%>%
+          select(Country,income, life)%>%
+          column_to_rownames(var = "Country")%>%
+          select(income,life)%>%
+          na.omit()%>%
+          scale()
+p11<-fviz_nbclust(df5, kmeans, method = "silhouette") + 
+        ggtitle("Year = 1800") + 
+        theme(plot.title = element_text(hjust = 0.5))
+k2<-kmeans(df5,centers = 3) 
+p12<-df5%>%
+        as_tibble%>%
+        mutate(cluster=k2$cluster, country=row.names(df5))%>%
+          ggplot(aes(life,income, label = country, color = factor(cluster))) + 
+            scale_colour_manual(values = c("1" = "red", "2"= "blue", "3" = "darkgreen")) + 
+            geom_text(show.legend = FALSE) + 
+            #labs(title = "Fig 6: K-Means Clustering (Region = America, Year = 1800, k = 3)") + 
+            xlab("GDP Per Capita") + 
+            ylab("Life Expectency") + 
+            theme(plot.title = element_text(hjust = 0.5)) +
+            theme_bw()
+##  
+df5<-df4%>%
+        filter(region=="America" & Year%in%c(1900))%>%
+        select(Country,income, life)%>%
+        column_to_rownames(var = "Country")%>%
+        select(income,life)%>%
+        na.omit()%>%
+        scale()
+p21<-fviz_nbclust(df5, kmeans, method = "silhouette") + 
+        ggtitle("Year = 1900")+ 
+        theme(plot.title = element_text(hjust = 0.5))
+k2<-kmeans(df5,centers = 2) 
+p22<-df5%>%
+        as_tibble%>%
+        mutate(cluster=k2$cluster, country=row.names(df5))%>%
+          ggplot(aes(life,income, label = country, color = factor(cluster))) + 
+            scale_colour_manual(values = c("1" = "red", "2"= "blue", "3" = "darkgreen")) + 
+            geom_text(show.legend = FALSE) + 
+            #labs(title = "Fig 7: K-Means Clustering (Region = America, Year = 1900, k = 2)") + 
+            xlab("GDP Per Capita") + 
+            ylab("Life Expectency") + 
+            theme(plot.title = element_text(hjust = 0.5)) +
+            theme_bw()
+#  
+df5<-df4%>%
+        filter(region=="America" & Year%in%c(2000))%>%
+        select(Country,income, life)%>%
+        column_to_rownames(var = "Country")%>%
+        select(income,life)%>%
+        na.omit()%>%
+        scale()
+p31<-fviz_nbclust(df5, kmeans, method = "silhouette") + 
+        ggtitle("Year = 2000") + 
+        theme(plot.title = element_text(hjust = 0.5))
+k2<-kmeans(df5,centers = 3) 
+p32<-df5%>%
+        as_tibble%>%
+        mutate(cluster=k2$cluster, country=row.names(df5))%>%
+          ggplot(aes(life,income, label = country, color = factor(cluster))) + 
+            scale_colour_manual(values = c("1" = "red", "2"= "blue", "3" = "darkgreen")) + 
+            geom_text(show.legend = FALSE) + 
+            #labs(title = "Fig 8: K-Means Clustering (Region = America, Year = 2000, k=3)") + 
+            xlab("GDP Per Capita") + 
+            ylab("Life Expectency") + 
+            theme(plot.title = element_text(hjust = 0.5)) +
+            theme_bw()
+##
+```
+```{r clusterplot1, echo=FALSE}
+#grid.arrange(p11, p21, p31, nrow=1,bottom = textGrob("Fig 5. Optimization of k (Region = America)"))
+grid.arrange(p11, p21, p31, nrow=1, bottom = "Fig 5. Optimization of k (Region = America)")
+#grid.arrange(p12,p22,p32,top = textGrob("Fig 6. K-means Clustering, Region = America", gp=gpar(fontsize=20,font=3)))
+```
+
+```{r clusterplot2, echo=FALSE}
+grid.arrange(p12, bottom = "Fig 6: K-Means Clustering (Region = America, Year = 1800, k = 3)")
+```
+\vspace{30pt}
+
+```{r clusterplot3, echo=FALSE}
+grid.arrange(p22, bottom = "Fig 7: K-Means Clustering (Region = America, Year = 1900, k = 2)")
+```
+
+```{r clusterplot4, echo=FALSE}
+grid.arrange(p32, bottom = "Fig 8: K-Means Clustering (Region = America, Year = 2000, k=3)")
+```
+\vspace{30pt}
+
+## Conclusion
+
+Over the period of two centuries between year 1800 and 2000, the development of the region or countries can be easily visualise from the changes of their GDP per capita income and life expectancy. In general higher the income better is the life expectancy. Also over the period of time the gap between wealthy and poors have been widened gradually.
+
+
+## Reference
+
+https://uc-r.github.io/kmeans_clustering)
+
+https://rafalab.github.io/dsbook/
+
+http://r-statistics.co/Complete-Ggplot2-Tutorial-Part2-Customizing-Theme-With-R-Code.html
+
+
